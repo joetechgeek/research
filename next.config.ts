@@ -2,12 +2,7 @@ import type { NextConfig } from "next";
 
 const nextConfig: NextConfig = {
   async rewrites() {
-    const apiUrl = process.env.NEXT_PUBLIC_API_URL 
-      ? process.env.NEXT_PUBLIC_API_URL.startsWith('http') 
-        ? process.env.NEXT_PUBLIC_API_URL 
-        : `https://${process.env.NEXT_PUBLIC_API_URL}`
-      : 'http://localhost:8000';
-
+    const apiUrl = process.env.NEXT_PUBLIC_API_URL || process.env.AMPLIFY_API_ENDPOINT;
     return [
       {
         source: "/api/:path*",

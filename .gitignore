@@ -41,3 +41,9 @@ next-env.d.ts
 
 # Large model files
 backend/models/*.gguf
+
+# Python files
+.env
+__pycache__/
+*.pyc
+.DS_Store

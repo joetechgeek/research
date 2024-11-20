@@ -14,8 +14,8 @@ app = FastAPI()
 app.add_middleware(
     CORSMiddleware,
     allow_origins=[
-        "https://your-vercel-app.vercel.app",  # Add your Vercel URL
-        "http://localhost:3000",  # Keep local development URL
+        os.getenv('FRONTEND_URL', 'http://localhost:3000'),
+        'http://localhost:3000',
     ],
     allow_credentials=True,
     allow_methods=["*"],
