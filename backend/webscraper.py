@@ -1,123 +1,103 @@
-from langchain_text_splitters import RecursiveCharacterTextSplitter
-from langchain_community.vectorstores import FAISS
-from langchain_core.prompts import PromptTemplate
-from langchain_community.chains import RetrievalQAWithSourcesChain
-from langchain_core.documents import Document
-from typing import List, Optional
-import time
 import requests
 from bs4 import BeautifulSoup
-from urllib.parse import urlparse
-import os
-from sklearn.feature_extraction.text import TfidfVectorizer
-import numpy as np
-import logging
-
-logging.basicConfig(level=logging.INFO)
-logger = logging.getLogger(__name__)
-
-class SimpleEmbeddings:
-    def __init__(self):
-        self.vectorizer = TfidfVectorizer(max_features=512)
-        self.fitted = False
-    
-    def embed_documents(self, texts: List[str]) -> List[np.ndarray]:
-        if not self.fitted:
-            vectors = self.vectorizer.fit_transform(texts).toarray()
-            self.fitted = True
-        else:
-            vectors = self.vectorizer.transform(texts).toarray()
-        return vectors.tolist()
-    
-    def embed_query(self, text: str) -> List[float]:
-        if not self.fitted:
-            raise ValueError("Embeddings must be fitted with documents first")
-        return self.vectorizer.transform([text]).toarray()[0].tolist()
+from langchain_community.vectorstores import FAISS
+from langchain_community.embeddings import HuggingFaceEmbeddings
+from langchain.text_splitter import RecursiveCharacterTextSplitter
+from langchain.chains import RetrievalQA, LLMChain
+from langchain_community.llms import HuggingFaceHub
+from langchain.prompts import PromptTemplate
 
 class WebScraper:
     def __init__(self):
-        self.embeddings = SimpleEmbeddings()
-        
-    def scrape_urls(self, urls: List[str]) -> List[Document]:
+        self.text_splitter = RecursiveCharacterTextSplitter(
+            chunk_size=500,
+            chunk_overlap=50
+        )
+        self.embeddings = HuggingFaceEmbeddings()
+
+    def scrape_urls(self, urls):
         documents = []
         for url in urls:
             try:
-                logger.info(f"Scraping URL: {url}")
-                response = requests.get(url, timeout=10)
+                response = requests.get(url)
                 response.raise_for_status()
-                
                 soup = BeautifulSoup(response.text, 'html.parser')
-                text = soup.get_text(separator=' ', strip=True)
                 
-                if not text:
-                    logger.warning(f"No text content found for URL: {url}")
-                    continue
-                    
-                documents.append(Document(
-                    page_content=text,
-                    metadata={"source": url}
-                ))
+                # Remove script and style elements
+                for script in soup(["script", "style"]):
+                    script.decompose()
                 
-                # Be nice to servers
-                time.sleep(1)
+                # Get text and clean it
+                text = soup.get_text()
+                lines = (line.strip() for line in text.splitlines())
+                chunks = (phrase.strip() for line in lines for phrase in line.split("  "))
+                text = ' '.join(chunk for chunk in chunks if chunk)
                 
-            except requests.RequestException as e:
-                logger.error(f"Error scraping {url}: {str(e)}")
+                # Split text into chunks
+                texts = self.text_splitter.split_text(text)
+                documents.extend(texts)
+                
+            except Exception as e:
+                print(f"Error scraping {url}: {str(e)}")
                 continue
                 
-        if not documents:
-            logger.error("No documents were successfully scraped")
-            return []
-            
         return documents
-        
-    def create_vector_store(self, documents: List[Document]) -> Optional[FAISS]:
+
+    def create_vector_store(self, documents):
         try:
-            logger.info("Creating vector store...")
-            text_splitter = RecursiveCharacterTextSplitter(
-                chunk_size=1000,
-                chunk_overlap=200
+            vector_store = FAISS.from_texts(
+                documents,
+                self.embeddings
             )
-            texts = text_splitter.split_documents(documents)
-            
-            if not texts:
-                logger.error("No texts after splitting documents")
-                return None
-                
-            vector_store = FAISS.from_documents(texts, self.embeddings)
-            logger.info("Vector store created successfully")
             return vector_store
-            
         except Exception as e:
-            logger.error(f"Error creating vector store: {str(e)}")
+            print(f"Error creating vector store: {str(e)}")
             return None
-            
-    def setup_qa_chain(self, vector_store: FAISS) -> Optional[RetrievalQAWithSourcesChain]:
+
+    def setup_qa_chain(self, vector_store):
         try:
-            logger.info("Setting up QA chain...")
-            prompt_template = """Use the following pieces of context to answer the question at the end. 
+            # Initialize retriever
+            retriever = vector_store.as_retriever(
+                search_type="similarity",
+                search_kwargs={"k": 3}
+            )
+            
+            # Create custom prompt
+            template = """<s>[INST] Use the following pieces of context to answer the question at the end. 
             If you don't know the answer, just say that you don't know, don't try to make up an answer.
-
-            {context}
-
-            Question: {question}
-            Answer:"""
             
-            PROMPT = PromptTemplate(
-                template=prompt_template, input_variables=["context", "question"]
+            Context: {context}
+            
+            Question: {question} [/INST]
+            
+            Answer: """
+            
+            QA_CHAIN_PROMPT = PromptTemplate(
+                input_variables=["context", "question"],
+                template=template,
             )
-            
-            chain = RetrievalQAWithSourcesChain.from_chain_type(
-                llm=None,  # We'll need to add an LLM here
+
+            # Initialize Llama model using HuggingFace Hub
+            llm = HuggingFaceHub(
+                repo_id="meta-llama/Llama-3.2-3B-Instruct",
+                model_kwargs={
+                    "temperature": 0.7,
+                    "max_new_tokens": 2048,
+                    "top_p": 0.9,
+                }
+            )
+
+            # Initialize QA chain
+            qa_chain = RetrievalQA.from_chain_type(
+                llm=llm,
                 chain_type="stuff",
-                retriever=vector_store.as_retriever(),
+                retriever=retriever,
                 return_source_documents=True,
-                chain_type_kwargs={"prompt": PROMPT}
+                chain_type_kwargs={"prompt": QA_CHAIN_PROMPT}
             )
             
-            logger.info("QA chain setup completed")
-            return chain
+            return qa_chain
             
         except Exception as e:
-            logger.error(f"Error setting up QA chain: {str(e)}")
+            print(f"Error setting up QA chain: {str(e)}")
             return None

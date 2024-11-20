@@ -9,3 +9,5 @@ langchain-community==0.0.10
 langchain-core==0.1.10
 faiss-cpu==1.7.4
 numpy==1.26.4
+sentence-transformers==2.5.1
+huggingface_hub==0.20.3
